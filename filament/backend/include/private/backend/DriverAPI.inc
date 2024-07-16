@@ -472,6 +472,10 @@ DECL_DRIVER_API_N(readBufferSubData,
         uint32_t, size,
         backend::BufferDescriptor&&, data)
 
+DECL_DRIVER_API_N(getTextureId,
+        backend::TextureHandle, th,
+        void*, result)
+
 /*
  * Rendering operations
  * --------------------

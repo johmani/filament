@@ -298,6 +298,12 @@ public:
     InternalFormat getFormat() const noexcept;
 
     /**
+    * Sets `result` to the texture ID that is used by the current driver (OpenGL/Vulkan).
+    * @return We set `result`  to the texture ID that is used by the current driver (OpenGL/Vulkan).
+    */
+    void getId(Engine& engine, void* result);
+
+    /**
      * Updates a sub-image of a 3D texture or 2D texture array for a level. Cubemaps are treated
      * like a 2D array of six layers.
      *

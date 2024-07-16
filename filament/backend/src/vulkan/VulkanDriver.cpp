@@ -1684,6 +1684,10 @@ void VulkanDriver::resolve(
     FVK_SYSTRACE_END();
 }
 
+void VulkanDriver::getTextureId(Handle<HwTexture> th, void* result) {
+  printf("Get texture id in VulkanDriver::getTextureId.\n");
+}
+
 void VulkanDriver::blit(
         Handle<HwTexture> dst, uint8_t srcLevel, uint8_t srcLayer, math::uint2 dstOrigin,
         Handle<HwTexture> src, uint8_t dstLevel, uint8_t dstLayer, math::uint2 srcOrigin,

@@ -3075,6 +3075,11 @@ void OpenGLDriver::setScissor(Viewport const& scissor) noexcept {
     gl.enable(GL_SCISSOR_TEST);
 }
 
+void OpenGLDriver::getTextureId(Handle<HwTexture> th, void* result) {
+    GLTexture* t = handle_cast<GLTexture*>(th);
+    *(uint32_t*)result = t->gl.id;
+}
+
 // ------------------------------------------------------------------------------------------------
 // Setting rendering state
 // ------------------------------------------------------------------------------------------------

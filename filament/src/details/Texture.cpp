@@ -487,6 +487,10 @@ size_t FTexture::getFormatSize(InternalFormat format) noexcept {
     return backend::getFormatSize(format);
 }
 
+void FTexture::getId(FEngine& engine, void* result) {
+    engine.getDriverApi().getTextureId(mHandle, result);
+    engine.flushAndWait();
+}
 
 void FTexture::generatePrefilterMipmap(FEngine& engine,
         PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets,

@@ -353,6 +353,10 @@ void NoopDriver::resolve(
         Handle<HwTexture> src, uint8_t dstLevel, uint8_t dstLayer) {
 }
 
+void NoopDriver::getTextureId(Handle<HwTexture> th, void* result) {
+    printf("Get texture id in NoopDriver::getTextureId.\n");
+}
+
 void NoopDriver::blit(
         Handle<HwTexture> dst, uint8_t srcLevel, uint8_t srcLayer, math::uint2 dstOrigin,
         Handle<HwTexture> src, uint8_t dstLevel, uint8_t dstLayer, math::uint2 srcOrigin,
