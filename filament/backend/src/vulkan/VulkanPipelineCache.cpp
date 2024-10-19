@@ -98,7 +98,7 @@ VulkanPipelineCache::PipelineCacheEntry* VulkanPipelineCache::createPipeline() n
     VkPipelineColorBlendStateCreateInfo colorBlendState;
     colorBlendState = VkPipelineColorBlendStateCreateInfo{};
     colorBlendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlendState.attachmentCount = 1;
+    colorBlendState.attachmentCount = mPipelineRequirements.rasterState.colorTargetCount;    
     colorBlendState.pAttachments = colorBlendAttachments;
 
     // If we reach this point, we need to create and stash a brand new pipeline object.
@@ -184,6 +184,7 @@ VulkanPipelineCache::PipelineCacheEntry* VulkanPipelineCache::createPipeline() n
     vkRaster.polygonMode = VK_POLYGON_MODE_FILL;
     vkRaster.cullMode = raster.cullMode;
     vkRaster.frontFace = raster.frontFace;
+    vkRaster.depthClampEnable = raster.depthClamp;
     vkRaster.depthBiasEnable = raster.depthBiasEnable;
     vkRaster.depthBiasConstantFactor = raster.depthBiasConstantFactor;
     vkRaster.depthBiasClamp = 0.0f;
@@ -209,8 +210,8 @@ VulkanPipelineCache::PipelineCacheEntry* VulkanPipelineCache::createPipeline() n
     pipelineCreateInfo.pDynamicState = &dynamicState;
 
     // Filament assumes consistent blend state across all color attachments.
-    colorBlendState.attachmentCount = mPipelineRequirements.rasterState.colorTargetCount;
-    for (auto& target : colorBlendAttachments) {
+    for (uint8_t i = 0; i < colorBlendState.attachmentCount; ++i) {
+        auto& target = colorBlendAttachments[i];
         target.blendEnable = mPipelineRequirements.rasterState.blendEnable;
         target.srcColorBlendFactor = mPipelineRequirements.rasterState.srcColorBlendFactor;
         target.dstColorBlendFactor = mPipelineRequirements.rasterState.dstColorBlendFactor;

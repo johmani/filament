@@ -20,11 +20,12 @@
 #include <backend/Handle.h>
 
 #include <utils/Allocator.h>
+#include <utils/CString.h>
 #include <utils/Log.h>
+#include <utils/Panic.h>
 #include <utils/compiler.h>
 #include <utils/debug.h>
 #include <utils/ostream.h>
-#include <utils/Panic.h>
 
 #include <tsl/robin_map.h>
 
@@ -37,9 +38,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HandleAllocatorGL  HandleAllocator<32,  64, 136>    // ~4520 / pool / MiB
+#define HandleAllocatorGL  HandleAllocator<32,  96, 136>    // ~4520 / pool / MiB
 #define HandleAllocatorVK  HandleAllocator<64, 160, 312>    // ~1820 / pool / MiB
-#define HandleAllocatorMTL HandleAllocator<32,  48, 552>    // ~1660 / pool / MiB
+#define HandleAllocatorMTL HandleAllocator<32,  64, 552>    // ~1660 / pool / MiB
 
 namespace filament::backend {
 
@@ -168,13 +169,31 @@ public:
         auto [p, tag] = handleToPointer(handle.getId());
 
         if (isPoolHandle(handle.getId())) {
-            // check for use after free
+            // check for pool handle use-after-free
             if (UTILS_UNLIKELY(!mUseAfterFreeCheckDisabled)) {
                 uint8_t const age = (tag & HANDLE_AGE_MASK) >> HANDLE_AGE_SHIFT;
                 auto const pNode = static_cast<typename Allocator::Node*>(p);
                 uint8_t const expectedAge = pNode[-1].age;
-                FILAMENT_CHECK_POSTCONDITION(expectedAge == age) <<
-                        "use-after-free of Handle with id=" << handle.getId();
+                // getHandleTag() is only called if the check fails.
+                FILAMENT_CHECK_POSTCONDITION(expectedAge == age)
+                        << "use-after-free of Handle with id=" << handle.getId()
+                        << ", tag=" << getHandleTag(handle.getId()).c_str_safe();
+            }
+        } else {
+            // check for heap handle use-after-free
+            if (UTILS_UNLIKELY(!mUseAfterFreeCheckDisabled)) {
+                uint8_t const index = (handle.getId() & HANDLE_INDEX_MASK);
+                // if we've already handed out this handle index before, it's definitely a
+                // use-after-free, otherwise it's probably just a corrupted handle
+                if (index < mId) {
+                    FILAMENT_CHECK_POSTCONDITION(p != nullptr)
+                            << "use-after-free of heap Handle with id=" << handle.getId()
+                            << ", tag=" << getHandleTag(handle.getId()).c_str_safe();
+                } else {
+                    FILAMENT_CHECK_POSTCONDITION(p != nullptr)
+                            << "corrupted heap Handle with id=" << handle.getId()
+                            << ", tag=" << getHandleTag(handle.getId()).c_str_safe();
+                }
             }
         }
 
@@ -183,14 +202,18 @@ public:
 
     template<typename B>
     bool is_valid(Handle<B>& handle) {
-        if (handle && isPoolHandle(handle.getId())) {
-            auto [p, tag] = handleToPointer(handle.getId());
+        if (!handle) {
+            // null handles are invalid
+            return false;
+        }
+        auto [p, tag] = handleToPointer(handle.getId());
+        if (isPoolHandle(handle.getId())) {
             uint8_t const age = (tag & HANDLE_AGE_MASK) >> HANDLE_AGE_SHIFT;
             auto const pNode = static_cast<typename Allocator::Node*>(p);
             uint8_t const expectedAge = pNode[-1].age;
             return expectedAge == age;
         }
-        return true;
+        return p != nullptr;
     }
 
     template<typename Dp, typename B>
@@ -199,6 +222,29 @@ public:
             std::is_base_of_v<B, typename std::remove_pointer_t<Dp>>, Dp>
     handle_cast(Handle<B> const& handle) {
         return handle_cast<Dp>(const_cast<Handle<B>&>(handle));
+    }
+
+    void associateTagToHandle(HandleBase::HandleId id, utils::CString&& tag) noexcept {
+        // TODO: for now, only pool handles check for use-after-free, so we only keep tags for
+        // those
+        if (isPoolHandle(id)) {
+            // Truncate the age to get the debug tag
+            uint32_t const key = id & ~(HANDLE_DEBUG_TAG_MASK ^ HANDLE_AGE_MASK);
+            // This line is the costly part. In the future, we could potentially use a custom
+            // allocator.
+            mDebugTags[key] = std::move(tag);
+        }
+    }
+
+    utils::CString getHandleTag(HandleBase::HandleId id) const noexcept {
+        if (!isPoolHandle(id)) {
+            return "(no tag)";
+        }
+        uint32_t const key = id & ~(HANDLE_DEBUG_TAG_MASK ^ HANDLE_AGE_MASK);
+        if (auto pos = mDebugTags.find(key); pos != mDebugTags.end()) {
+            return pos->second;
+        }
+        return "(no tag)";
     }
 
 private:
@@ -318,12 +364,24 @@ private:
         }
     }
 
-    // we handle a 4 bits age per address
-    static constexpr uint32_t HANDLE_HEAP_FLAG      = 0x80000000u;      // pool vs heap handle
-    static constexpr uint32_t HANDLE_AGE_MASK       = 0x78000000u;      // handle's age
-    static constexpr uint32_t HANDLE_INDEX_MASK     = 0x07FFFFFFu;      // handle index
-    static constexpr uint32_t HANDLE_TAG_MASK       = HANDLE_AGE_MASK;
-    static constexpr uint32_t HANDLE_AGE_SHIFT      = 27;
+    // number if bits allotted to the handle's age (currently 4 max)
+    static constexpr uint32_t HANDLE_AGE_BIT_COUNT = 4;
+    // number if bits allotted to the handle's debug tag (HANDLE_AGE_BIT_COUNT max)
+    static constexpr uint32_t HANDLE_DEBUG_TAG_BIT_COUNT = 2;
+    // bit shift for both the age and debug tag
+    static constexpr uint32_t HANDLE_AGE_SHIFT = 27;
+    // mask for the heap (vs pool) flag
+    static constexpr uint32_t HANDLE_HEAP_FLAG = 0x80000000u;
+    // mask for the age
+    static constexpr uint32_t HANDLE_AGE_MASK =
+            ((1 << HANDLE_AGE_BIT_COUNT) - 1) << HANDLE_AGE_SHIFT;
+    // mask for the debug tag
+    static constexpr uint32_t HANDLE_DEBUG_TAG_MASK =
+            ((1 << HANDLE_DEBUG_TAG_BIT_COUNT) - 1) << HANDLE_AGE_SHIFT;
+    // mask for the index
+    static constexpr uint32_t HANDLE_INDEX_MASK = 0x07FFFFFFu;
+
+    static_assert(HANDLE_DEBUG_TAG_BIT_COUNT <= HANDLE_AGE_BIT_COUNT);
 
     static bool isPoolHandle(HandleBase::HandleId id) noexcept {
         return (id & HANDLE_HEAP_FLAG) == 0u;
@@ -338,7 +396,7 @@ private:
         // a non-pool handle.
         if (UTILS_LIKELY(isPoolHandle(id))) {
             char* const base = (char*)mHandleArena.getArea().begin();
-            uint32_t const tag = id & HANDLE_TAG_MASK;
+            uint32_t const tag = id & HANDLE_AGE_MASK;
             size_t const offset = (id & HANDLE_INDEX_MASK) * Allocator::getAlignment();
             return { static_cast<void*>(base + offset), tag };
         }
@@ -353,7 +411,7 @@ private:
         size_t const offset = (char*)p - base;
         assert_invariant((offset % Allocator::getAlignment()) == 0);
         auto id = HandleBase::HandleId(offset / Allocator::getAlignment());
-        id |= tag & HANDLE_TAG_MASK;
+        id |= tag & HANDLE_AGE_MASK;
         assert_invariant((id & HANDLE_HEAP_FLAG) == 0);
         return id;
     }
@@ -363,6 +421,7 @@ private:
     // Below is only used when running out of space in the HandleArena
     mutable utils::Mutex mLock;
     tsl::robin_map<HandleBase::HandleId, void*> mOverflowMap;
+    tsl::robin_map<HandleBase::HandleId, utils::CString> mDebugTags;
     HandleBase::HandleId mId = 0;
     bool mUseAfterFreeCheckDisabled = false;
 };

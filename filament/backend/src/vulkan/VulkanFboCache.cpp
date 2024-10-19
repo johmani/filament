@@ -31,7 +31,6 @@ namespace filament::backend {
 
 bool VulkanFboCache::RenderPassEq::operator()(const RenderPassKey& k1,
         const RenderPassKey& k2) const {
-    if (k1.initialColorLayoutMask != k2.initialColorLayoutMask) return false;
     if (k1.initialDepthLayout != k2.initialDepthLayout) return false;
     for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
         if (k1.colorFormat[i] != k2.colorFormat[i]) return false;
@@ -42,7 +41,9 @@ bool VulkanFboCache::RenderPassEq::operator()(const RenderPassKey& k1,
     if (k1.discardEnd != k2.discardEnd) return false;
     if (k1.samples != k2.samples) return false;
     if (k1.needsResolveMask != k2.needsResolveMask) return false;
+    if (k1.usesLazilyAllocatedMemory != k2.usesLazilyAllocatedMemory) return false;
     if (k1.subpassMask != k2.subpassMask) return false;
+    if (k1.viewCount != k2.viewCount) return false;
     return true;
 }
 
@@ -186,6 +187,25 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
         .pDependencies = dependencies
     };
 
+    VkRenderPassMultiviewCreateInfo multiviewCreateInfo = {};
+    uint32_t const subpassViewMask = (1 << config.viewCount) - 1;
+    // Prepare a view mask array for the maximum number of subpasses. All subpasses have all views
+    // activated.
+    uint32_t const viewMasks[2] = {subpassViewMask, subpassViewMask};
+    if (config.viewCount > 1) {
+        // Fill the multiview create info.
+        multiviewCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO;
+        multiviewCreateInfo.pNext = nullptr;
+        multiviewCreateInfo.subpassCount = hasSubpasses ? 2u : 1u;
+        multiviewCreateInfo.pViewMasks = viewMasks;
+        multiviewCreateInfo.dependencyCount = 0;
+        multiviewCreateInfo.pViewOffsets = nullptr;
+        multiviewCreateInfo.correlationMaskCount = 1;
+        multiviewCreateInfo.pCorrelationMasks = &subpassViewMask;
+
+        renderPassInfo.pNext = &multiviewCreateInfo;
+    }
+
     int attachmentIndex = 0;
 
     // Populate the Color Attachments.
@@ -235,12 +255,10 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
             .format = config.colorFormat[i],
             .samples = (VkSampleCountFlagBits) config.samples,
             .loadOp = clear ? kClear : (discard ? kDontCare : kKeep),
-            .storeOp = kEnableStore,
+            .storeOp = (config.usesLazilyAllocatedMemory & (1 << i)) ? kDisableStore : kEnableStore,
             .stencilLoadOp = kDontCare,
             .stencilStoreOp = kDisableStore,
-            .initialLayout = ((!discard && config.initialColorLayoutMask & (1 << i)) || clear)
-                                     ? imgutil::getVkLayout(VulkanLayout::COLOR_ATTACHMENT)
-                                     : imgutil::getVkLayout(VulkanLayout::UNDEFINED),
+            .initialLayout = imgutil::getVkLayout(VulkanLayout::COLOR_ATTACHMENT),
             .finalLayout = imgutil::getVkLayout(FINAL_COLOR_ATTACHMENT_LAYOUT),
         };
     }

@@ -60,9 +60,18 @@ public:
     struct RenderPrimitive {
         static_assert(MAX_VERTEX_ATTRIBUTE_COUNT <= 16);
 
-        GLuint vao[2] = {};                                     // 4
+        GLuint vao[2] = {};                                     // 8
         GLuint elementArray = 0;                                // 4
+        GLenum indicesType = 0;                                 // 4
+
+        // The optional 32-bit handle to a GLVertexBuffer is necessary only if the referenced
+        // VertexBuffer supports buffer objects. If this is zero, then the VBO handles array is
+        // immutable.
+        Handle<HwVertexBuffer> vertexBufferWithObjects;         // 4
+
         mutable utils::bitset<uint16_t> vertexAttribArray;      // 2
+
+        uint8_t reserved[2] = {};                               // 2
 
         // if this differs from vertexBufferWithObjects->bufferObjectsVersion, this VAO needs to
         // be updated (see OpenGLDriver::updateVertexArrayObject())
@@ -76,16 +85,11 @@ public:
         // See OpenGLContext::bindVertexArray()
         uint8_t nameVersion = 0;                                // 1
 
-        // Size in bytes of indices in the index buffer
-        uint8_t indicesSize = 0;                                // 1
-
-        // The optional 32-bit handle to a GLVertexBuffer is necessary only if the referenced
-        // VertexBuffer supports buffer objects. If this is zero, then the VBO handles array is
-        // immutable.
-        Handle<HwVertexBuffer> vertexBufferWithObjects;         // 4
+        // Size in bytes of indices in the index buffer (1 or 2)
+        uint8_t indicesShift = 0;                                // 1
 
         GLenum getIndicesType() const noexcept {
-            return indicesSize == 4 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
+            return indicesType;
         }
     } gl;
 
@@ -186,7 +190,7 @@ public:
     inline void viewport(GLint left, GLint bottom, GLsizei width, GLsizei height) noexcept;
     inline void depthRange(GLclampf near, GLclampf far) noexcept;
 
-    void deleteBuffers(GLsizei n, const GLuint* buffers, GLenum target) noexcept;
+    void deleteBuffer(GLuint buffer, GLenum target) noexcept;
     void deleteVertexArray(GLuint vao) noexcept;
 
     void destroyWithContext(size_t index, std::function<void(OpenGLContext&)> const& closure) noexcept;
@@ -220,8 +224,9 @@ public:
         bool EXT_color_buffer_float;
         bool EXT_color_buffer_half_float;
         bool EXT_debug_marker;
-        bool EXT_disjoint_timer_query;
+        bool EXT_depth_clamp;
         bool EXT_discard_framebuffer;
+        bool EXT_disjoint_timer_query;
         bool EXT_multisampled_render_to_texture2;
         bool EXT_multisampled_render_to_texture;
         bool EXT_protected_textures;
@@ -239,10 +244,10 @@ public:
         bool KHR_parallel_shader_compile;
         bool KHR_texture_compression_astc_hdr;
         bool KHR_texture_compression_astc_ldr;
-        bool OES_depth_texture;
-        bool OES_depth24;
-        bool OES_packed_depth_stencil;
         bool OES_EGL_image_external_essl3;
+        bool OES_depth24;
+        bool OES_depth_texture;
+        bool OES_packed_depth_stencil;
         bool OES_rgb8_rgba8;
         bool OES_standard_derivatives;
         bool OES_texture_npot;
@@ -311,9 +316,14 @@ public:
         // a glFinish. So we must delay the destruction until we know the GPU is finished.
         bool delay_fbo_destruction;
 
+        // Mesa sometimes clears the generic buffer binding when *another* buffer is destroyed,
+        // if that other buffer is bound on an *indexed* buffer binding.
+        bool rebind_buffer_after_deletion;
+
         // Force feature level 0. Typically used for low end ES3 devices with significant driver
         // bugs or performance issues.
         bool force_feature_level0;
+
 
     } bugs = {};
 
@@ -473,12 +483,6 @@ public:
 
     void unbindEverything() noexcept;
     void synchronizeStateAndCache(size_t index) noexcept;
-    void setEs2UniformBinding(size_t index, GLuint id, void const* data, uint16_t age) noexcept {
-        mUniformBindings[index] = { id, data, age };
-    }
-    auto getEs2UniformBinding(size_t index) const noexcept {
-        return mUniformBindings[index];
-    }
 
 #ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
     GLuint getSamplerSlow(SamplerParams sp) const noexcept;
@@ -505,9 +509,6 @@ private:
     std::vector<std::function<void(OpenGLContext&)>> mDestroyWithNormalContext;
     RenderPrimitive mDefaultVAO;
     std::optional<GLuint> mDefaultFbo[2];
-    std::array<
-            std::tuple<GLuint, void const*, uint16_t>,
-            CONFIG_UNIFORM_BINDING_COUNT> mUniformBindings = {};
     mutable tsl::robin_map<SamplerParams, GLuint,
             SamplerParams::Hasher, SamplerParams::EqualTo> mSamplerMap;
 
@@ -557,6 +558,9 @@ private:
                     ""},
             {   bugs.delay_fbo_destruction,
                     "delay_fbo_destruction",
+                    ""},
+            {   bugs.rebind_buffer_after_deletion,
+                    "rebind_buffer_after_deletion",
                     ""},
             {   bugs.force_feature_level0,
                     "force_feature_level0",
@@ -627,6 +631,7 @@ constexpr size_t OpenGLContext::getIndexForCap(GLenum cap) noexcept { //NOLINT
 #ifdef BACKEND_OPENGL_VERSION_GL
         case GL_PROGRAM_POINT_SIZE:             index = 10; break;
 #endif
+        case GL_DEPTH_CLAMP:                    index = 11; break;
         default: break;
     }
     assert_invariant(index < state.enables.caps.size());

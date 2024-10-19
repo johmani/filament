@@ -39,25 +39,36 @@
 #include "eiff/SimpleFieldChunk.h"
 #include "eiff/DictionaryTextChunk.h"
 #include "eiff/DictionarySpirvChunk.h"
-#include "eiff/DictionaryMetalLibraryChunk.h"
 
 #include <private/filament/BufferInterfaceBlock.h>
 #include <private/filament/SamplerInterfaceBlock.h>
 #include <private/filament/UibStructs.h>
 #include <private/filament/ConstantInfo.h>
+#include <private/filament/DescriptorSets.h>
+#include <private/filament/EngineEnums.h>
 
+#include <backend/DriverEnums.h>
 #include <backend/Program.h>
 
+#include <utils/compiler.h>
+#include <utils/debug.h>
+#include <utils/FixedCapacityVector.h>
 #include <utils/JobSystem.h>
 #include <utils/Log.h>
 #include <utils/Mutex.h>
 #include <utils/Panic.h>
 #include <utils/Hash.h>
 
+#include <algorithm>
 #include <atomic>
+#include <tuple>
 #include <utility>
 #include <vector>
+#include <iostream>
 #include <fstream>
+
+#include <stdint.h>
+#include <stddef.h>
 
 namespace filamat {
 
@@ -234,7 +245,21 @@ MaterialBuilder& MaterialBuilder::variable(Variable v, const char* name) noexcep
         case Variable::CUSTOM2:
         case Variable::CUSTOM3:
             assert(size_t(v) < MATERIAL_VARIABLES_COUNT);
-            mVariables[size_t(v)] = CString(name);
+            mVariables[size_t(v)] = { CString(name), Precision::DEFAULT, false };
+            break;
+    }
+    return *this;
+}
+
+MaterialBuilder& MaterialBuilder::variable(Variable v,
+        const char* name, ParameterPrecision precision) noexcept {
+    switch (v) {
+        case Variable::CUSTOM0:
+        case Variable::CUSTOM1:
+        case Variable::CUSTOM2:
+        case Variable::CUSTOM3:
+            assert(size_t(v) < MATERIAL_VARIABLES_COUNT);
+            mVariables[size_t(v)] = { CString(name), precision, true };
             break;
     }
     return *this;
@@ -583,12 +608,13 @@ void MaterialBuilder::prepareToBuild(MaterialInfo& info) noexcept {
     // Build the per-material sampler block and uniform block.
     SamplerInterfaceBlock::Builder sbb;
     BufferInterfaceBlock::Builder ibb;
-    for (size_t i = 0, c = mParameterCount; i < c; i++) {
+    // sampler bindings start at 1, 0 is the ubo
+    for (size_t i = 0, binding = 1, c = mParameterCount; i < c; i++) {
         auto const& param = mParameters[i];
         assert_invariant(!param.isSubpass());
         if (param.isSampler()) {
             sbb.add({ param.name.data(), param.name.size() },
-                    param.samplerType, param.format, param.precision, param.multisample);
+                    binding++, param.samplerType, param.format, param.precision, param.multisample);
         } else if (param.isUniform()) {
             ibb.add({{{ param.name.data(), param.name.size() },
                       uint32_t(param.size == 1u ? 0u : param.size), param.uniformType,
@@ -912,20 +938,21 @@ bool MaterialBuilder::generateShaders(JobSystem& jobSystem, const std::vector<Va
                 std::string shader;
                 if (v.stage == backend::ShaderStage::VERTEX) {
                     shader = sg.createVertexProgram(
-                            shaderModel, targetApi, targetLanguage, featureLevel, info, v.variant,
-                            mInterpolation, mVertexDomain);
+                            shaderModel, targetApi, targetLanguage, featureLevel,
+                            info, v.variant, mInterpolation, mVertexDomain);
                 } else if (v.stage == backend::ShaderStage::FRAGMENT) {
                     shader = sg.createFragmentProgram(
-                            shaderModel, targetApi, targetLanguage, featureLevel, info, v.variant,
-                            mInterpolation);
+                            shaderModel, targetApi, targetLanguage, featureLevel,
+                            info, v.variant, mInterpolation, mVariantFilter);
                 } else if (v.stage == backend::ShaderStage::COMPUTE) {
                     shader = sg.createComputeProgram(
-                            shaderModel, targetApi, targetLanguage, featureLevel, info);
+                            shaderModel, targetApi, targetLanguage, featureLevel,
+                            info);
                 }
 
                 // Write the variant to a file.
                 if (mSaveRawVariants) {
-                    int variantKey = v.variant.key;
+                    int const variantKey = v.variant.key;
                     auto getExtension = [](backend::ShaderStage stage) {
                         switch (stage) {
                             case backend::ShaderStage::VERTEX:
@@ -954,6 +981,7 @@ bool MaterialBuilder::generateShaders(JobSystem& jobSystem, const std::vector<Va
 
                 GLSLPostProcessor::Config config{
                         .variant = v.variant,
+                        .variantFilter = mVariantFilter,
                         .targetApi = targetApi,
                         .targetLanguage = targetLanguage,
                         .shaderType = v.stage,
@@ -1229,8 +1257,6 @@ error:
         goto error;
     }
 
-    info.samplerBindings.init(mMaterialDomain, info.sib);
-
     // adjust variant-filter for feature level *before* we start writing into the container
     if (mFeatureLevel == filament::backend::FeatureLevel::FEATURE_LEVEL_0) {
         // at feature level 0, many variants are not supported
@@ -1383,7 +1409,7 @@ bool MaterialBuilder::checkMaterialLevelFeatures(MaterialInfo const& info) const
 
 bool MaterialBuilder::hasCustomVaryings() const noexcept {
     for (const auto& variable : mVariables) {
-        if (!variable.empty()) {
+        if (!variable.name.empty()) {
             return true;
         }
     }
@@ -1410,7 +1436,6 @@ std::string MaterialBuilder::peek(backend::ShaderStage stage,
 
     MaterialInfo info;
     prepareToBuild(info);
-    info.samplerBindings.init(mMaterialDomain, info.sib);
 
     switch (stage) {
         case backend::ShaderStage::VERTEX:
@@ -1420,7 +1445,7 @@ std::string MaterialBuilder::peek(backend::ShaderStage stage,
         case backend::ShaderStage::FRAGMENT:
             return sg.createFragmentProgram(
                     params.shaderModel, params.targetApi, params.targetLanguage,
-                    params.featureLevel, info, {}, mInterpolation);
+                    params.featureLevel, info, {}, mInterpolation, mVariantFilter);
         case backend::ShaderStage::COMPUTE:
             return sg.createComputeProgram(
                     params.shaderModel, params.targetApi, params.targetLanguage,
@@ -1470,17 +1495,13 @@ void MaterialBuilder::writeCommonChunks(ChunkContainer& container, MaterialInfo&
     using namespace filament;
 
     if (info.featureLevel == FeatureLevel::FEATURE_LEVEL_0) {
-        FixedCapacityVector<std::pair<UniformBindingPoints, Program::UniformInfo>> list({
-                { UniformBindingPoints::PER_VIEW,
-                        extractUniforms(UibGenerator::getPerViewUib()) },
-                { UniformBindingPoints::PER_RENDERABLE,
-                        extractUniforms(UibGenerator::getPerRenderableUib()) },
-                { UniformBindingPoints::PER_MATERIAL_INSTANCE,
-                        extractUniforms(info.uib) },
-        });
-
         // FIXME: don't hardcode this
-        auto& uniforms = list[1].second;
+        FixedCapacityVector<std::tuple<uint8_t, utils::CString, Program::UniformInfo>> list({
+                { 0, "FrameUniforms",  extractUniforms(UibGenerator::getPerViewUib()) },
+                { 1, "ObjectUniforms", extractUniforms(UibGenerator::getPerRenderableUib()) },
+                { 2, "MaterialParams", extractUniforms(info.uib) },
+        });
+        auto& uniforms = std::get<2>(list[1]);
         uniforms.clear();
         uniforms.reserve(6);
         uniforms.push_back({
@@ -1520,36 +1541,21 @@ void MaterialBuilder::writeCommonChunks(ChunkContainer& container, MaterialInfo&
         container.push<MaterialAttributesInfoChunk>(std::move(attributes));
     }
 
-    // TODO: currently, the feature level used is determined by the material because we
-    //       don't have "feature level" variants. In other words, a feature level 0 material
-    //       won't work with a feature level 1 engine. However, we do embed the feature level 1
-    //       meta-data, as it should.
-
-    if (info.featureLevel <= FeatureLevel::FEATURE_LEVEL_1) {
-        // note: this chunk is only needed for OpenGL backends, which don't all support layout(binding=)
-        FixedCapacityVector<std::pair<std::string_view, UniformBindingPoints>> list = {
-                { PerViewUib::_name,               UniformBindingPoints::PER_VIEW },
-                { PerRenderableUib::_name,         UniformBindingPoints::PER_RENDERABLE },
-                { LightsUib::_name,                UniformBindingPoints::LIGHTS },
-                { ShadowUib::_name,                UniformBindingPoints::SHADOW },
-                { FroxelRecordUib::_name,          UniformBindingPoints::FROXEL_RECORDS },
-                { FroxelsUib::_name,               UniformBindingPoints::FROXELS },
-                { PerRenderableBoneUib::_name,     UniformBindingPoints::PER_RENDERABLE_BONES },
-                { PerRenderableMorphingUib::_name, UniformBindingPoints::PER_RENDERABLE_MORPHING },
-                { info.uib.getName(),              UniformBindingPoints::PER_MATERIAL_INSTANCE }
-        };
-        container.push<MaterialUniformBlockBindingsChunk>(std::move(list));
-    }
-
-    // note: this chunk is needed for Vulkan and GL backends. Metal shouldn't need it (but
-    // still does as of now).
-    container.push<MaterialSamplerBlockBindingChunk>(info.samplerBindings);
-
-    // User Material UIB
+    // User parameters (UBO)
     container.push<MaterialUniformInterfaceBlockChunk>(info.uib);
 
-    // User Material SIB
+    // User texture parameters
     container.push<MaterialSamplerInterfaceBlockChunk>(info.sib);
+
+
+    backend::DescriptorSetLayout const perViewDescriptorSetLayout =
+            descriptor_sets::getPerViewDescriptorSetLayout(
+            mMaterialDomain, mVariantFilter,
+            info.isLit || info.hasShadowMultiplier, info.reflectionMode, info.refractionMode);
+
+    // Descriptor layout and descriptor name/binding mapping
+    container.push<MaterialDescriptorBindingsChuck>(info.sib, perViewDescriptorSetLayout);
+    container.push<MaterialDescriptorSetLayoutChunk>(info.sib, perViewDescriptorSetLayout);
 
     // User constant parameters
     utils::FixedCapacityVector<MaterialConstant> constantsEntry(mConstants.size());
@@ -1609,6 +1615,7 @@ void MaterialBuilder::writeCommonChunks(ChunkContainer& container, MaterialInfo&
             }
         }
         container.emplace<uint64_t>(ChunkType::MaterialProperties, properties);
+        container.emplace<uint8_t>(ChunkType::MaterialStereoscopicType, static_cast<uint8_t>(mStereoscopicType));
     }
 
     // create a unique material id

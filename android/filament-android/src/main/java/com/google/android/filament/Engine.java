@@ -224,13 +224,12 @@ public class Engine {
             nSetBuilderConfig(mNativeBuilder, config.commandBufferSizeMB,
                     config.perRenderPassArenaSizeMB, config.driverHandleArenaSizeMB,
                     config.minCommandBufferSizeMB, config.perFrameCommandsSizeMB,
-                    config.jobSystemThreadCount,
-                    config.textureUseAfterFreePoolSize, config.disableParallelShaderCompile,
+                    config.jobSystemThreadCount, config.disableParallelShaderCompile,
                     config.stereoscopicType.ordinal(), config.stereoscopicEyeCount,
                     config.resourceAllocatorCacheSizeMB, config.resourceAllocatorCacheMaxAge,
                     config.disableHandleUseAfterFreeCheck,
                     config.preferredShaderLanguage.ordinal(),
-                    config.forceGLES2Context);
+                    config.forceGLES2Context, config.assertNativeWindowIsValid);
             return this;
         }
 
@@ -419,22 +418,25 @@ public class Engine {
          */
         public long stereoscopicEyeCount = 2;
 
-        /*
+        /**
          * @Deprecated This value is no longer used.
          */
         public long resourceAllocatorCacheSizeMB = 64;
 
-        /*
-         * This value determines for how many frames are texture entries kept in the cache.
+        /**
+         * This value determines how many frames texture entries are kept for in the cache. This
+         * is a soft limit, meaning some texture older than this are allowed to stay in the cache.
+         * Typically only one texture is evicted per frame.
+         * The default is 1.
          */
-        public long resourceAllocatorCacheMaxAge = 2;
+        public long resourceAllocatorCacheMaxAge = 1;
 
-        /*
+        /**
          * Disable backend handles use-after-free checks.
          */
         public boolean disableHandleUseAfterFreeCheck = false;
 
-        /*
+        /**
          * Sets a preferred shader language for Filament to use.
          *
          * The Metal backend supports two shader languages: MSL (Metal Shading Language) and
@@ -456,12 +458,19 @@ public class Engine {
         };
         public ShaderLanguage preferredShaderLanguage = ShaderLanguage.DEFAULT;
 
-        /*
+        /**
          * When the OpenGL ES backend is used, setting this value to true will force a GLES2.0
          * context if supported by the Platform, or if not, will have the backend pretend
          * it's a GLES2 context. Ignored on other backends.
          */
         public boolean forceGLES2Context = false;
+
+        /**
+         * Assert the native window associated to a SwapChain is valid when calling makeCurrent().
+         * This is only supported for:
+         *      - PlatformEGLAndroid
+         */
+        public boolean assertNativeWindowIsValid = false;
     }
 
     private Engine(long nativeEngine, Config config) {
@@ -1403,12 +1412,11 @@ public class Engine {
     private static native void nSetBuilderConfig(long nativeBuilder, long commandBufferSizeMB,
             long perRenderPassArenaSizeMB, long driverHandleArenaSizeMB,
             long minCommandBufferSizeMB, long perFrameCommandsSizeMB, long jobSystemThreadCount,
-            long textureUseAfterFreePoolSize, boolean disableParallelShaderCompile,
-            int stereoscopicType, long stereoscopicEyeCount,
+            boolean disableParallelShaderCompile, int stereoscopicType, long stereoscopicEyeCount,
             long resourceAllocatorCacheSizeMB, long resourceAllocatorCacheMaxAge,
             boolean disableHandleUseAfterFreeCheck,
             int preferredShaderLanguage,
-            boolean forceGLES2Context);
+            boolean forceGLES2Context, boolean assertNativeWindowIsValid);
     private static native void nSetBuilderFeatureLevel(long nativeBuilder, int ordinal);
     private static native void nSetBuilderSharedContext(long nativeBuilder, long sharedContext);
     private static native void nSetBuilderPaused(long nativeBuilder, boolean paused);

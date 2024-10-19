@@ -61,8 +61,10 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <set>
+#include <sstream>
 #include <string>
 
 #include "generated/resources/gltf_demo.h"
@@ -137,6 +139,8 @@ struct App {
 
     AutomationSpec* automationSpec = nullptr;
     AutomationEngine* automationEngine = nullptr;
+    bool screenshot = false;
+    uint8_t screenshotSeq = 0;
 };
 
 static const char* DEFAULT_IBL = "assets/ibl/lightroom_14b";
@@ -511,7 +515,9 @@ static void onClick(App& app, View* view, ImVec2 pos) {
 
 static utils::Path getPathForIBLAsset(std::string_view string) {
     auto isIBL = [] (utils::Path file) -> bool {
-        return file.getExtension() == "ktx" || file.getExtension() == "hdr";
+        return file.getExtension() == "ktx" || file.getExtension() == "hdr" ||
+            file.getExtension() == "exr";
+
     };
 
     utils::Path filename{ string };
@@ -667,7 +673,15 @@ int main(int argc, char** argv) {
         buffer.shrink_to_fit();
     };
 
-    auto loadResources = [&app] (const utils::Path& filename) {
+    auto setupIBL = [&app]() {
+        auto ibl = FilamentApp::get().getIBL();
+        if (ibl) {
+            app.viewer->setIndirectLight(ibl->getIndirectLight(), ibl->getSphericalHarmonics());
+            app.viewer->getSettings().view.fogSettings.fogColorTexture = ibl->getFogTexture();
+        }
+    };
+
+    auto loadResources = [&app, &setupIBL] (const utils::Path& filename) {
         // Load external textures and buffers.
         std::string const gltfPath = filename.getAbsolutePath();
         ResourceConfiguration configuration = {};
@@ -704,12 +718,7 @@ int main(int argc, char** argv) {
             instances[mi]->setStencilWrite(true);
             instances[mi]->setStencilOpDepthStencilPass(MaterialInstance::StencilOperation::INCR);
         }
-
-        auto ibl = FilamentApp::get().getIBL();
-        if (ibl) {
-            app.viewer->setIndirectLight(ibl->getIndirectLight(), ibl->getSphericalHarmonics());
-            app.viewer->getSettings().view.fogSettings.fogColorTexture = ibl->getFogTexture();
-        }
+        setupIBL();
     };
 
     auto setup = [&](Engine* engine, View* view, Scene* scene) {
@@ -877,10 +886,15 @@ int main(int argc, char** argv) {
 
             if (ImGui::CollapsingHeader("Debug")) {
                 auto& debug = engine->getDebugRegistry();
-                if (ImGui::Button("Capture frame")) {
-                    bool* captureFrame =
-                            debug.getPropertyAddress<bool>("d.renderer.doFrameCapture");
-                    *captureFrame = true;
+                if (engine->getBackend() == Engine::Backend::METAL) {
+                    if (ImGui::Button("Capture frame")) {
+                        bool* captureFrame =
+                                debug.getPropertyAddress<bool>("d.renderer.doFrameCapture");
+                        *captureFrame = true;
+                    }
+                }
+                if (ImGui::Button("Screenshot")) {
+                    app.screenshot = true;
                 }
                 ImGui::Checkbox("Disable buffer padding",
                         debug.getPropertyAddress<bool>("d.renderer.disable_buffer_padding"));
@@ -894,6 +908,10 @@ int main(int argc, char** argv) {
                         debug.getPropertyAddress<bool>("d.shadowmap.far_uses_shadowcasters"));
                 ImGui::Checkbox("Focus shadow casters",
                         debug.getPropertyAddress<bool>("d.shadowmap.focus_shadowcasters"));
+                ImGui::Checkbox("Disable light frustum alignment",
+                        debug.getPropertyAddress<bool>("d.shadowmap.disable_light_frustum_align"));
+                ImGui::Checkbox("Depth clamp",
+                        debug.getPropertyAddress<bool>("d.shadowmap.depth_clamp"));
 
                 bool debugDirectionalShadowmap;
                 if (debug.getProperty("d.shadowmap.debug_directional_shadowmap",
@@ -1134,6 +1152,14 @@ int main(int argc, char** argv) {
     };
 
     auto postRender = [&app](Engine* engine, View* view, Scene*, Renderer* renderer) {
+        if (app.screenshot) {
+            std::ostringstream stringStream;
+            stringStream << "screenshot" << std::setfill('0') << std::setw(2) << +app.screenshotSeq;
+            AutomationEngine::exportScreenshot(
+                    view, renderer, stringStream.str() + ".ppm", false, app.automationEngine);
+            ++app.screenshotSeq;
+            app.screenshot = false;
+        }
         if (app.automationEngine->shouldClose()) {
             FilamentApp::get().close();
             return;
@@ -1169,7 +1195,7 @@ int main(int argc, char** argv) {
         filename = getPathForIBLAsset(path);
         if (!filename.isEmpty()) {
             FilamentApp::get().loadIBL(path);
-            return;
+            setupIBL();
         }
     });
 

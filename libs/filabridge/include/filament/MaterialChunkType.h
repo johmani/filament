@@ -47,10 +47,10 @@ enum UTILS_PUBLIC ChunkType : uint64_t {
     MaterialMetal = charTo64bitNum("MAT_METL"),
     MaterialMetalLibrary = charTo64bitNum("MAT_MLIB"),
     MaterialShaderModels = charTo64bitNum("MAT_SMDL"),
-    MaterialSamplerBindings = charTo64bitNum("MAT_SAMP"),
-    MaterialUniformBindings = charTo64bitNum("MAT_UNIF"),
     MaterialBindingUniformInfo = charTo64bitNum("MAT_UFRM"),
     MaterialAttributeInfo = charTo64bitNum("MAT_ATTR"),
+    MaterialDescriptorBindingsInfo = charTo64bitNum("MAT_DBDI"),
+    MaterialDescriptorSetLayoutInfo = charTo64bitNum("MAT_DSLI"),
     MaterialProperties = charTo64bitNum("MAT_PROP"),
     MaterialConstants = charTo64bitNum("MAT_CONS"),
     MaterialPushConstants = charTo64bitNum("MAT_PCON"),
@@ -92,6 +92,7 @@ enum UTILS_PUBLIC ChunkType : uint64_t {
 
     MaterialVertexDomain = charTo64bitNum("MAT_VEDO"),
     MaterialInterpolation = charTo64bitNum("MAT_INTR"),
+    MaterialStereoscopicType = charTo64bitNum("MAT_STER"),
 
     DictionaryText = charTo64bitNum("DIC_TEXT"),
     DictionarySpirv = charTo64bitNum("DIC_SPIR"),
